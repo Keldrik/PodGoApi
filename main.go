@@ -19,9 +19,9 @@ var episodeCollection *mongo.Collection
 func main() {
 	clientOptions :=
 		options.Client().ApplyURI("mongodb://localhost")
-	client, err := mongo.Connect(context.TODO(), clientOptions)
-	if err != nil {
-		panic(err)
+	client, mongoErr := mongo.Connect(context.TODO(), clientOptions)
+	if mongoErr != nil {
+		panic(mongoErr)
 	}
 	defer client.Disconnect(context.TODO())
 	podcastCollection = client.Database("podgo").Collection("podcasts")
@@ -29,22 +29,27 @@ func main() {
 
 	r := gin.Default()
 
-	r.GET("/podcast/random", GetPodcastRandom)
-	r.GET("/podcast/all/:page", GetPodcastAll)
-	r.GET("/podcast/single/:podlisturl", GetPodcastSingle)
+	r.GET("/podcast/random", getPodcastRandom)
+	r.GET("/podcast/all/:page", getPodcastAll)
+	r.GET("/podcast/single/:podlisturl", getPodcastSingle)
 
-	r.GET("/episode/all/:page", GetEpisodeAll)
-	r.GET("/episode/podcast/:podcasturl/:page", GetEpisodePodcast)
-	r.GET("/episode/single/:podcasturl/:podlisturl", GetEpisodeSingle)
+	r.GET("/episode/all/:page", getEpisodeAll)
+	r.GET("/episode/podcast/:podcasturl/:page", getEpisodePodcast)
+	r.GET("/episode/single/:podcasturl/:podlisturl", getEpisodeSingle)
 
-	r.Run(":3007")
+	ginErr := r.Run(":3007")
+	if ginErr != nil {
+		log.Fatal(ginErr)
+	}
 }
 
-func GetPodcastRandom(c *gin.Context) {
+func getPodcastRandom(c *gin.Context) {
 	var podcast Podcast
 	opts1 := options.Count().SetMaxTime(5 * time.Second)
 	count, err := podcastCollection.CountDocuments(context.TODO(), bson.D{}, opts1)
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	opts2 := options.Find().SetSkip(rand.Int63n(count)).SetLimit(1)
 	cursor, err := podcastCollection.Find(context.TODO(), bson.D{}, opts2)
 	if err != nil {
@@ -63,13 +68,13 @@ func GetPodcastRandom(c *gin.Context) {
 	}
 }
 
-func GetPodcastAll(c *gin.Context) {
+func getPodcastAll(c *gin.Context) {
 	pageSize := int64(12)
 	page, _ := strconv.ParseInt(c.Param("page"), 10, 32)
 	count, _ := podcastCollection.CountDocuments(context.TODO(), bson.D{})
 	lastPage := int64(math.Ceil(float64(count) / float64(pageSize)))
 	var podcasts []Podcast
-	opts := options.Find().SetSort(bson.D{{"podlistUrl", 1}}).SetSkip(pageSize*page - pageSize).SetLimit(int64(pageSize))
+	opts := options.Find().SetSort(bson.D{{"podlistUrl", 1}}).SetSkip(pageSize*page - pageSize).SetLimit(pageSize)
 	cursor, err := podcastCollection.Find(context.TODO(), bson.D{}, opts)
 	if err != nil {
 		log.Println(err)
@@ -95,27 +100,22 @@ func GetPodcastAll(c *gin.Context) {
 	}
 }
 
-func GetPodcastSingle(c *gin.Context) {
-	podlistUrl := c.Param("podlisturl")
+func getPodcastSingle(c *gin.Context) {
+	podlistURL := c.Param("podlisturl")
 	var podcast Podcast
-	err := podcastCollection.FindOne(context.TODO(), bson.M{"podlistUrl": podlistUrl}).Decode(&podcast)
-	if err != nil {
-		log.Println(err)
-		c.JSON(500, gin.H{
-			"error": err.Error(),
-		})
-	} else {
+	err := podcastCollection.FindOne(context.TODO(), bson.M{"podlistUrl": podlistURL}).Decode(&podcast)
+	if !checkErrorOne(err, c) {
 		c.JSON(200, podcast)
 	}
 }
 
-func GetEpisodeAll(c *gin.Context) {
+func getEpisodeAll(c *gin.Context) {
 	pageSize := int64(12)
 	page, _ := strconv.ParseInt(c.Param("page"), 10, 32)
 	count, _ := episodeCollection.CountDocuments(context.TODO(), bson.D{})
 	lastPage := int64(math.Ceil(float64(count) / float64(pageSize)))
 	var episodes []Episode
-	opts := options.Find().SetSort(bson.D{{"published", -1}}).SetSkip(pageSize*page - pageSize).SetLimit(int64(pageSize))
+	opts := options.Find().SetSort(bson.D{{"published", -1}}).SetSkip(pageSize*page - pageSize).SetLimit(pageSize)
 	cursor, err := episodeCollection.Find(context.TODO(), bson.D{}, opts)
 	if err != nil {
 		log.Println(err)
@@ -141,7 +141,7 @@ func GetEpisodeAll(c *gin.Context) {
 	}
 }
 
-func GetEpisodePodcast(c *gin.Context) {
+func getEpisodePodcast(c *gin.Context) {
 	pageSize := int64(12)
 	page, _ := strconv.ParseInt(c.Param("page"), 10, 32)
 	podcastUrl := c.Param("podcasturl")
@@ -157,6 +157,7 @@ func GetEpisodePodcast(c *gin.Context) {
 		})
 	} else {
 		defer cursor.Close(context.TODO())
+		cursor.RemainingBatchLength()
 		if cursor.RemainingBatchLength() < 1 {
 			c.JSON(500, gin.H{
 				"error": "Page does not exist!",
@@ -174,17 +175,29 @@ func GetEpisodePodcast(c *gin.Context) {
 	}
 }
 
-func GetEpisodeSingle(c *gin.Context) {
+func getEpisodeSingle(c *gin.Context) {
 	podlistUrl := c.Param("podlisturl")
 	podcastUrl := c.Param("podcasturl")
 	var episode Episode
 	err := episodeCollection.FindOne(context.TODO(), bson.M{"podlistUrl": podlistUrl, "podcastUrl": podcastUrl}).Decode(&episode)
-	if err != nil {
-		log.Println(err)
-		c.JSON(500, gin.H{
-			"error": err.Error(),
-		})
-	} else {
+	if !checkErrorOne(err, c) {
 		c.JSON(200, episode)
+	}
+}
+
+func checkErrorOne(err error, c *gin.Context) bool {
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(404, gin.H{
+				"error": err.Error(),
+			})
+		} else {
+			c.JSON(500, gin.H{
+				"error": err.Error(),
+			})
+		}
+		return true
+	} else {
+		return false
 	}
 }
