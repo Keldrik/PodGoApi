@@ -49,7 +49,7 @@ func getPodcastRandom(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	pipeline := mongo.Pipeline{{{"$sample", bson.D{{"size", 1}}}}}
+	pipeline := mongo.Pipeline{{{Key: "$sample", Value: bson.D{{Key: "size", Value: 1}}}}}
 	cursor, err := podcastCollection.Aggregate(ctx, pipeline)
 	if handleError(err, c) {
 		return
